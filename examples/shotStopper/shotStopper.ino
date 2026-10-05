@@ -169,9 +169,12 @@ void setup() {
   weightCharacteristic.writeValue(goalWeight);
   BLE.advertise();
   Serial.println("Bluetooth® device active, waiting for connections...");
+
+  museWifiSetup(); // Muse gadget HTTP API
 }
 
 void loop() {
+  museWifiLoop(); // Muse gadget HTTP API
 
   // Attempt to connect to scale every 1 seconds
   if(!scale.isConnected() & millis() - lastConnectAttempt >= 1000){
