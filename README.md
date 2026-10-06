@@ -65,6 +65,12 @@ The following variables at the top of the shotStopper.ino file can be configured
 `TIMER_ONLY`
 * false by default. disables brew-by-weight functionality and enables only automatic timer and tare
 
+## Muse Integration
+
+`examples/shotStopper/muse_wifi.ino` adds WiFi and a small LAN HTTP API (`/status`, `/target`, `/last`) so [Muse](https://github.com/facebookincubator/muse-gadget-sdk) can set the yield goal and read shot results through a Muse Home Link gadget. Install steps are in the file header.
+
+To teach your muse the API, paste [`skills/gadget-espresso-bar/SKILL.md`](skills/gadget-espresso-bar/SKILL.md) into its chat. The skill also covers the [MuseGrinder](https://github.com/avidan/MuseGrinder) grind-by-weight grinder.
+
 ## Demo
 
 You can find a demo on Youtube:
