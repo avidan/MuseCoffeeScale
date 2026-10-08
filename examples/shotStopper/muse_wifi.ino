@@ -26,7 +26,8 @@
     GET  /last    -> final weight, goal, duration, end reason of last shot
 
   OTA: once on WiFi, the board accepts ArduinoOTA uploads as
-  "shotstopper-grinder". Put  #define MUSE_OTA_PASSWORD "..."  in a
+  "shotstopper-grinder". POST /ota/prepare first: it drops the scale and
+  pauses reconnecting for 2 min, since an active scale link breaks OTA. Put  #define MUSE_OTA_PASSWORD "..."  in a
   gitignored ota_secret.h next to this file to require a password.
   Uploads are refused while a shot is brewing.
 
@@ -64,6 +65,21 @@ struct MuseLastGrind {
 static MuseLastGrind museLast;
 static bool musePrevBrewing = false;
 static unsigned long museShotEndMs = 0;  // nonzero while waiting for the drip
+
+// An active scale connection breaks OTA (seen with a Lunar: auth OK, then the
+// board never opens the data connection). POST /ota/prepare drops the scale
+// and holds off reconnecting so an upload can run.
+static const unsigned long MUSE_SCALE_PAUSE_MS = 120000;
+static unsigned long museScalePauseStartMs = 0;  // nonzero while paused
+
+bool museScalePaused() {
+  if (museScalePauseStartMs &&
+      millis() - museScalePauseStartMs >= MUSE_SCALE_PAUSE_MS) {
+    museScalePauseStartMs = 0;
+    Serial.println("scale pause expired, reconnecting");
+  }
+  return museScalePauseStartMs != 0;
+}
 
 static const char* museEndReason(ENDTYPE e) {
   switch (e) {
@@ -117,6 +133,20 @@ static void museHandleTarget() {
   museServer.send(200, "application/json", buf);
 }
 
+static void museHandleOtaPrepare() {
+  if (shot.brewing) {
+    museServer.send(409, "application/json", "{\"error\":\"shot in progress\"}");
+    return;
+  }
+  museScalePauseStartMs = millis() | 1;
+  BLE.stopScan();
+  BLE.disconnect();
+  Serial.println("scale paused for OTA");
+  char buf[64];
+  snprintf(buf, sizeof(buf), "{\"scale_paused_s\":%lu}", MUSE_SCALE_PAUSE_MS / 1000);
+  museServer.send(200, "application/json", buf);
+}
+
 static void museHandleLast() {
   char buf[192];
   snprintf(buf, sizeof(buf),
@@ -140,12 +170,6 @@ static void museStartNetServices() {
 #endif
   ArduinoOTA.onStart([]() {
     digitalWrite(OUT, LOW);  // release the brew relay before flashing
-    // An active scale connection starves the OTA transfer (seen with a Lunar:
-    // auth OK, then no data connection). The loop doesn't run during the
-    // update; on failure the library's packet timeout reconnects the scale.
-    BLE.stopScan();
-    BLE.disconnect();
-    delay(200);
     Serial.println("OTA update starting");
   });
   ArduinoOTA.onError([](ota_error_t e) {
@@ -158,6 +182,7 @@ static void museStartNetServices() {
   museServer.on("/status", HTTP_GET, museHandleStatus);
   museServer.on("/target", HTTP_POST, museHandleTarget);
   museServer.on("/last", HTTP_GET, museHandleLast);
+  museServer.on("/ota/prepare", HTTP_POST, museHandleOtaPrepare);
   museServer.onNotFound([]() {
     museServer.send(404, "application/json", "{\"error\":\"not found\"}");
   });

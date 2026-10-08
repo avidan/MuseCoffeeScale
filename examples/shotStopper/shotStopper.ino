@@ -180,8 +180,8 @@ void setup() {
 void loop() {
   museWifiLoop(); // Muse gadget HTTP API
 
-  // Attempt to connect to scale every 1 seconds
-  if(!scale.isConnected() & millis() - lastConnectAttempt >= 1000){
+  // Attempt to connect to scale every 1 seconds (unless paused for an OTA update)
+  if(!scale.isConnected() && !museScalePaused() && millis() - lastConnectAttempt >= 1000){
       lastConnectAttempt = millis();
       setColor(RED);
       scale.init(); 
