@@ -63,6 +63,7 @@ struct MuseLastGrind {
 };
 static MuseLastGrind museLast;
 static bool musePrevBrewing = false;
+static unsigned long museShotEndMs = 0;  // nonzero while waiting for the drip
 
 static const char* museEndReason(ENDTYPE e) {
   switch (e) {
@@ -139,6 +140,12 @@ static void museStartNetServices() {
 #endif
   ArduinoOTA.onStart([]() {
     digitalWrite(OUT, LOW);  // release the brew relay before flashing
+    // An active scale connection starves the OTA transfer (seen with a Lunar:
+    // auth OK, then no data connection). The loop doesn't run during the
+    // update; on failure the library's packet timeout reconnects the scale.
+    BLE.stopScan();
+    BLE.disconnect();
+    delay(200);
     Serial.println("OTA update starting");
   });
   ArduinoOTA.onError([](ota_error_t e) {
@@ -187,13 +194,14 @@ void museWifiLoop() {
   if (musePrevBrewing && !shot.brewing) {
     museLast.goalG = goalWeight;
     museLast.durationS = shot.end_s;
-    museLast.endReason = museEndReason(shot.end);
+    museLast.endReason = museEndReason(lastShotEnd);
     if (shot.datapoints > 0) {
       museLast.finalWeightG = shot.weight[shot.datapoints - 1];
     } else {
       museLast.finalWeightG = currentWeight;
     }
     museLast.valid = true;
+    museShotEndMs = millis() | 1;
     Serial.print("grind finished: ");
     Serial.print(museLast.finalWeightG);
     Serial.print("g in ");
@@ -201,4 +209,11 @@ void museWifiLoop() {
     Serial.println("s");
   }
   musePrevBrewing = shot.brewing;
+
+  // Re-read the weight once the drip settles, like the stock offset learning.
+  if (museShotEndMs && !shot.brewing &&
+      millis() - museShotEndMs >= DRIP_DELAY_S * 1000UL) {
+    museLast.finalWeightG = currentWeight;
+    museShotEndMs = 0;
+  }
 }
