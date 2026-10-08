@@ -43,11 +43,13 @@
 #define N 10                        // Number of datapoints used to calculate trend line
 
 //User defined***
+#ifndef MOMENTARY
 #define MOMENTARY false       //Define brew switch style. 
-                              // True for momentary switches such as GS3 AV, Silvia Pro
+#endif                        // True for momentary switches such as GS3 AV, Silvia Pro
                               // false for latching switches such as Linea Mini/Micra
+#ifndef REEDSWITCH
 #define REEDSWITCH false      // Set to true if the brew state is being determined 
-                              //  by a reed switch attached to the brew solenoid
+#endif                        //  by a reed switch attached to the brew solenoid
 #define AUTOTARE true         // Automatically tare when shot is started 
                               // Will tare also 3 seconds after a latching switch brew for non-bookoo scales
                               // (as defined by MOMENTARY)
@@ -117,10 +119,12 @@ struct Shot {
   int datapoints;          // Number of datapoitns in the scatter plot
   bool brewing;            // True when actively brewing, otherwise false
   ENDTYPE end;
+  bool tareChecked;        // Auto-tare verified (or retried) for this shot
 };
 
 //Initialize shot
-Shot shot = {0,0,0,0,{},{},0,false,ENDTYPE::UNDEF};
+Shot shot = {0,0,0,0,{},{},0,false,ENDTYPE::UNDEF,false};
+ENDTYPE lastShotEnd = ENDTYPE::UNDEF;  // shot.end is reset at shot end; keep a copy
 
 //BLE peripheral device
 BLEService weightService("0x0FFE"); // create service
@@ -176,8 +180,8 @@ void setup() {
 void loop() {
   museWifiLoop(); // Muse gadget HTTP API
 
-  // Attempt to connect to scale every 1 seconds
-  if(!scale.isConnected() & millis() - lastConnectAttempt >= 1000){
+  // Attempt to connect to scale every 1 seconds (unless paused for an OTA update)
+  if(!scale.isConnected() && !museScalePaused() && millis() - lastConnectAttempt >= 1000){
       lastConnectAttempt = millis();
       setColor(RED);
       scale.init(); 
@@ -202,14 +206,19 @@ void setBrewingState(bool brewing){
     shot.start_timestamp_s = seconds_f();
     shot.shotTimer = 0;
     shot.datapoints = 0;
+    shot.tareChecked = false;
     if (CAN_TARE_START_TIMER && AUTOTARE) {
       scale.tareStartTimer();
     } else {
-      scale.resetTimer();
-      scale.startTimer();
+      // Tare first and space the writes out: back-to-back write-without-response
+      // commands can be dropped (seen on a Lunar: timer started, tare lost).
       if(AUTOTARE){
         scale.tare();
+        delay(100);
       }
+      scale.resetTimer();
+      delay(50);
+      scale.startTimer();
     }
     Serial.println("Weight Timer End");
   }else{
@@ -232,6 +241,7 @@ void setBrewingState(bool brewing){
         break;
     }
 
+    lastShotEnd = shot.end;
     shot.end_s = seconds_f() - shot.start_timestamp_s;
     scale.stopTimer();
     if(!TIMER_ONLY 
@@ -321,6 +331,19 @@ void scaleConnected_task(){
 
     if(!shot.brewing){
       setColor(GREEN);
+    }
+
+    // Verify the auto-tare landed: 1s in, an untared cup still reads its
+    // full weight. Retry once and drop the bogus trajectory, otherwise the
+    // end-time prediction sees the cup weight and stops the shot early.
+    if(shot.brewing && AUTOTARE && !shot.tareChecked
+    && seconds_f() - shot.start_timestamp_s >= 1.0){
+      shot.tareChecked = true;
+      if(currentWeight > 5){
+        Serial.println("tare not applied, retrying");
+        scale.tare();
+        shot.datapoints = 0;
+      }
     }
 
     // update shot trajectory
