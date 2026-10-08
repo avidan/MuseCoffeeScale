@@ -15,24 +15,42 @@
     4. Install the WiFiManager library (tzapu/WiFiManager) via the
        Arduino Library Manager. No other new dependencies.
 
-  FIRST BOOT: the board creates an AP named "shotStopper-Setup".
-  Join it, pick your WiFi network, done. Credentials persist.
+  FIRST BOOT: the board opens an AP named "shotStopper-Setup" for 3 minutes.
+  Join it, pick your WiFi network, done. Credentials persist. Shot stopping
+  runs the whole time: WiFi never blocks setup() or loop().
 
   API (port 80, also at http://shotstopper-grinder.local):
     GET  /status  -> scale link, brewing state, live weight, goal, timer
-    POST /target  -> {"g": 18.5}  sets dose target (10-200g), persists to EEPROM,
-                     mirrors the BLE goal-weight characteristic
-    GET  /last    -> final weight, goal, duration, end reason of last grind
+    POST /target  -> {"g": 36}  sets the yield goal (10-200g, whole grams),
+                     persists to EEPROM, mirrors the BLE goal-weight characteristic
+    GET  /last    -> final weight, goal, duration, end reason of last shot
 
-  Assumes classic ESP32 (shotStopper default pin map).
+  OTA: once on WiFi, the board accepts ArduinoOTA uploads as
+  "shotstopper-grinder". Put  #define MUSE_OTA_PASSWORD "..."  in a
+  gitignored ota_secret.h next to this file to require a password.
+  Uploads are refused while a shot is brewing.
+
+  Pin maps come from shotStopper.ino (ESP32-C3 for the shotStopper PCB).
+
+  BUILD: WiFi + BLE no longer fit the default 1.25MB app slot. Use the
+  "No FS 4MB (2MB APP x2)" partition scheme, which keeps OTA. Switch style can
+  be set without editing shotStopper.ino, e.g. for a GS3 AV:
+    arduino-cli compile --fqbn esp32:esp32:esp32c3:PartitionScheme=no_fs \
+      --library ../.. --build-property "compiler.cpp.extra_flags=-DMOMENTARY=true" .
 */
 
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <WiFiManager.h>
+#include <ArduinoOTA.h>
+#if __has_include("ota_secret.h")
+#include "ota_secret.h"
+#endif
 
 static WebServer museServer(80);
+static WiFiManager museWm;
+static bool museNetStarted = false;
 
 // Last-grind summary, captured on the brewing true->false transition.
 struct MuseLastGrind {
@@ -108,20 +126,26 @@ static void museHandleLast() {
   museServer.send(200, "application/json", buf);
 }
 
-void museWifiSetup() {
-  WiFiManager wm;
-  wm.setConnectTimeout(20);
-  // Blocks into the captive portal only when no saved network connects.
-  if (!wm.autoConnect("shotStopper-Setup")) {
-    Serial.println("WiFi setup failed, rebooting");
-    ESP.restart();
-  }
+// Start mDNS, OTA and the HTTP API once the station link is up. Deferred so
+// the API never fights WiFiManager's setup portal for port 80.
+static void museStartNetServices() {
   Serial.print("WiFi connected, IP: ");
   Serial.println(WiFi.localIP());
 
-  if (MDNS.begin("shotstopper-grinder")) {
-    Serial.println("mDNS: http://shotstopper-grinder.local");
-  }
+  ArduinoOTA.setHostname("shotstopper-grinder");  // also starts mDNS
+#ifdef MUSE_OTA_PASSWORD
+  ArduinoOTA.setPassword(MUSE_OTA_PASSWORD);
+#endif
+  ArduinoOTA.onStart([]() {
+    digitalWrite(OUT, LOW);  // release the brew relay before flashing
+    Serial.println("OTA update starting");
+  });
+  ArduinoOTA.onError([](ota_error_t e) {
+    Serial.printf("OTA error %u\n", e);
+  });
+  ArduinoOTA.begin();
+  MDNS.addService("http", "tcp", 80);
+  Serial.println("mDNS: http://shotstopper-grinder.local");
 
   museServer.on("/status", HTTP_GET, museHandleStatus);
   museServer.on("/target", HTTP_POST, museHandleTarget);
@@ -131,10 +155,31 @@ void museWifiSetup() {
   });
   museServer.begin();
   Serial.println("Muse HTTP API on port 80");
+  museNetStarted = true;
+}
+
+void museWifiSetup() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  museWm.setConfigPortalBlocking(false);
+  museWm.setConfigPortalTimeout(180);  // close the setup AP after 3 min
+  museWm.setConnectTimeout(10);
+  // With saved credentials this waits up to 10s for the link; otherwise it
+  // opens the setup AP and returns immediately. museWifiLoop() finishes up.
+  museWm.autoConnect("shotStopper-Setup");
 }
 
 void museWifiLoop() {
-  museServer.handleClient();
+  museWm.process();  // drives the non-blocking setup portal
+  if (!museNetStarted && WiFi.status() == WL_CONNECTED &&
+      !museWm.getConfigPortalActive()) {
+    museStartNetServices();
+  }
+  if (museNetStarted) {
+    // Never reflash mid-shot: the pump relay is live.
+    if (!shot.brewing) ArduinoOTA.handle();
+    museServer.handleClient();
+  }
 
   // Capture the last-grind summary on the brewing true -> false edge.
   // (Reads the stock Shot struct; no changes to shotStopper.ino needed.)

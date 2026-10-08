@@ -43,11 +43,13 @@
 #define N 10                        // Number of datapoints used to calculate trend line
 
 //User defined***
+#ifndef MOMENTARY
 #define MOMENTARY false       //Define brew switch style. 
-                              // True for momentary switches such as GS3 AV, Silvia Pro
+#endif                        // True for momentary switches such as GS3 AV, Silvia Pro
                               // false for latching switches such as Linea Mini/Micra
+#ifndef REEDSWITCH
 #define REEDSWITCH false      // Set to true if the brew state is being determined 
-                              //  by a reed switch attached to the brew solenoid
+#endif                        //  by a reed switch attached to the brew solenoid
 #define AUTOTARE true         // Automatically tare when shot is started 
                               // Will tare also 3 seconds after a latching switch brew for non-bookoo scales
                               // (as defined by MOMENTARY)
