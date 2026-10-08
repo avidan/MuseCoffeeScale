@@ -30,12 +30,13 @@
   gitignored ota_secret.h next to this file to require a password.
   Uploads are refused while a shot is brewing.
 
-  Pin maps come from shotStopper.ino (ESP32-C3 for the shotStopper PCB).
+  Pin maps come from shotStopper.ino. The V3 PCB is an ESP32-S3 (4MB flash).
 
   BUILD: WiFi + BLE no longer fit the default 1.25MB app slot. Use the
   "No FS 4MB (2MB APP x2)" partition scheme, which keeps OTA. Switch style can
   be set without editing shotStopper.ino, e.g. for a GS3 AV:
-    arduino-cli compile --fqbn esp32:esp32:esp32c3:PartitionScheme=no_fs \
+    arduino-cli compile \
+      --fqbn esp32:esp32:esp32s3:PartitionScheme=no_fs,FlashSize=4M,CDCOnBoot=cdc \
       --library ../.. --build-property "compiler.cpp.extra_flags=-DMOMENTARY=true" .
 */
 
